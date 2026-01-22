@@ -1,0 +1,584 @@
+## Summary: Issues Faced While Setting Up AWS API Gateway Private REST API & How They Were Resolved
+
+### 1. **VPC Endpoint Creation – Subnets Not Visible**
+
+**Issue**
+
+* While creating an **Interface VPC Endpoint for `execute-api`**, subnets from a newly created VPC were **not visible**, even though they were in the same region.
+
+**Root Cause**
+
+* The new VPC subnets were **not eligible for interface endpoint ENI creation** due to subtle subnet configuration constraints.
+* Default VPC subnets worked because they are **preconfigured and fully compatible**.
+
+**Resolution**
+
+* Temporarily switched to the **default VPC** to continue the POC.
+* Learned that interface endpoints require:
+
+  * Valid IPv4 CIDR
+  * Available IPv4 addresses
+  * DNS hostnames and DNS resolution enabled at VPC level
+  * Standard AZs (not Local Zones)
+* Decided to revisit custom VPC setup later with correct subnet sizing and settings.
+
+---
+
+### 2. **Confusion Between API Gateway Stage and Resource Path**
+
+**Issue**
+
+* Created:
+
+  * A **stage named `dev`**
+  * A **resource path `/dev`**
+* Resulted in URLs like:
+
+  ```
+  /dev/dev/api1/test
+  ```
+
+**Root Cause**
+
+* Misunderstanding of API Gateway URL structure.
+* API Gateway **automatically injects the stage name** into the URL.
+
+**Resolution**
+
+* Removed the `/dev` resource.
+* Kept only the `dev` stage.
+* Final correct structure:
+
+  ```
+  /api1/{proxy+}
+  /api2/{proxy+}
+  ```
+* Correct URL format:
+
+  ```
+  https://{api-id}.execute-api.{region}.amazonaws.com/dev/api1/test
+  ```
+
+---
+
+### 3. **403 Errors Due to Resource Policy Explicit Deny**
+
+**Issue**
+
+* Requests from EC2 inside the VPC returned:
+
+  ```
+  explicit deny in a resource-based policy
+  ```
+
+**Root Cause**
+
+* Resource policy used:
+
+  ```json
+  "aws:SourceVpc"
+  ```
+* For **private API Gateway**, requests originate from the **VPC Endpoint ENI**, not directly from the VPC.
+* Explicit `Deny` always overrides `Allow`.
+
+**Resolution**
+
+* Replaced `aws:SourceVpc` with **`aws:SourceVpce`**.
+* Restricted access to the specific **interface VPC endpoint ID**.
+* Removed unnecessary explicit `Deny` and relied on implicit deny.
+
+**Correct approach**
+
+```json
+"Condition": {
+  "StringEquals": {
+    "aws:SourceVpce": "vpce-xxxx"
+  }
+}
+```
+
+---
+
+### 4. **Incorrect Resource ARN in Resource Policy**
+
+**Issue**
+
+* Used an overly broad or incomplete API Gateway ARN in the policy.
+
+**Root Cause**
+
+* API Gateway resource policies must include:
+
+  * API ID
+  * Stage
+  * Method and resource wildcards
+
+**Resolution**
+
+* Updated ARN format to:
+
+  ```
+  arn:aws:execute-api:{region}:{account}:{api-id}/dev/*/*
+  ```
+
+---
+
+### 5. **Misunderstanding IAM Role Usage on EC2**
+
+**Issue**
+
+* EC2 instance had an IAM role with `execute-api:Invoke`, but API Gateway showed:
+
+  ```
+  User: anonymous
+  ```
+
+**Root Cause**
+
+* API methods had:
+
+  * Authorization = NONE
+* IAM roles are **ignored** unless:
+
+  * Method authorization = IAM
+  * Request is signed with SigV4
+
+**Resolution**
+
+* Accepted this behavior as expected.
+* Understood that:
+
+  * Resource policy + VPC endpoint controls access
+  * EC2 IAM role is irrelevant without IAM auth enabled
+
+---
+
+### 6. **Validation of Private Routing via DNS**
+
+**Check Performed**
+
+* Ran `nslookup` for API Gateway endpoint from EC2.
+
+**Result**
+
+* DNS resolved to **private IPs**.
+
+**Conclusion**
+
+* Confirmed that traffic was correctly flowing through the **interface VPC endpoint**, not the public internet.
+
+---
+
+## Final Working State
+
+* Private REST API Gateway
+* Interface VPC Endpoint (`execute-api`)
+* Correct resource tree without stage duplication
+* Resource policy restricted via `aws:SourceVpce`
+* Successful invocation from EC2 inside VPC
+* Proper `{proxy+}` routing replacing ALB `/*` pattern
+
+---
+
+## Key Learnings
+
+* **Stage names are part of the URL automatically**
+* **Private APIs must be secured with `aws:SourceVpce`, not `aws:SourceVpc`**
+* **Explicit deny in resource policies is dangerous during debugging**
+* **Interface endpoints depend heavily on subnet eligibility**
+* **EC2 IAM roles do not apply unless IAM auth is enabled**
+* `{proxy+}` is the API Gateway equivalent of ALB wildcard routing
+
+
+## 7. **API Key Not Enforced Even When “API Key Required” Is Enabled**
+
+### Issue
+
+After enabling **“API Key Required”** on the `ANY` method under `{proxy+}` for both `/api1` and `/api2`, the APIs were still **successfully invoked without passing an API key**.
+
+---
+
+### Root Cause
+
+In AWS API Gateway, **API key enforcement does not happen at the method level alone**.
+
+The following conditions must ALL be met for API keys to be enforced:
+
+1. Method setting **API Key Required = true**
+2. A **Usage Plan exists**
+3. The API **stage is attached to the Usage Plan**
+4. The request includes a valid **`x-api-key` header**
+
+In this case:
+
+* Only the **method-level flag** was enabled
+* No **usage plan** (or no API-stage association) existed
+
+As a result, API Gateway **ignored the API key requirement** and allowed the request.
+
+---
+
+### Resolution
+
+1. Created a **Usage Plan**
+2. Attached the **API and `dev` stage** to the Usage Plan
+3. Created an **API Key**
+4. Associated the API key with the Usage Plan
+5. Redeployed the API
+
+After this:
+
+* Requests **without** `x-api-key` returned **403 Forbidden**
+* Requests **with** a valid API key succeeded
+
+---
+
+### Key Clarification
+
+* The **“API Key Required”** checkbox only marks the method as *eligible* for API key enforcement
+* **Usage Plans** are where API key enforcement actually happens
+* API keys are **not a security mechanism**, especially for private APIs—they are primarily for **throttling and quota control**
+
+---
+
+### Final Learning
+
+> **API Gateway enforces API keys via Usage Plans, not directly via method settings**
+
+This behavior is expected and often misunderstood during initial API Gateway setups.
+
+---
+
+## 8. **Browser-Based UI Calls to Private API Gateway Failed Without CORS Configuration**
+
+### Issue
+
+APIs hosted on **AWS API Gateway (Private REST API)** were invoked from a **browser-based UI application** running on an EC2 instance behind an **internal ALB** (for example, `http://alb-internal-url/dev/configurator`).
+Even though both the UI and APIs were internal and within the same VPC, browser requests failed due to **CORS (Cross-Origin Resource Sharing)** restrictions.
+
+---
+
+### Root Cause
+
+CORS is enforced by **web browsers**, not by AWS networking or VPC isolation.
+
+* The UI and API had **different origins**:
+
+  * Different domains (ALB DNS vs API Gateway DNS)
+  * Different schemes (HTTP vs HTTPS)
+* Browsers treated these as **cross-origin requests**
+* API Gateway responses lacked required **CORS headers**
+* As a result, the browser blocked responses even though the API was reachable and functional
+
+Private APIs, VPC endpoints, and internal ALBs **do not bypass CORS rules**.
+
+---
+
+### Resolution
+
+* Enabled **CORS configuration** on the actual callable resources:
+
+  ```
+  /api1/{proxy+}
+  /api2/{proxy+}
+  ```
+* Did **not** enable CORS on the root (`/`) resource
+* Configured:
+
+  * `Access-Control-Allow-Origin` (set to `*` for POC)
+  * Allowed headers including `Content-Type`, `Authorization`, `X-Api-Key`
+  * OPTIONS method for preflight requests
+  * CORS headers for default 4XX and 5XX gateway responses
+* Redeployed the API after enabling CORS
+
+---
+
+### Key Clarifications
+
+* CORS is required **only for browser-based clients**
+* Backend-to-backend calls (e.g., EC2, Lambda, curl) **do not require CORS**
+* CORS configuration does **not weaken API security**
+* OPTIONS requests must not require API keys or authorization
+* CORS must be configured at the `{proxy+}` resource level when proxy routing is used
+
+---
+
+### Final Learning
+
+> **If a browser is involved, CORS is mandatory—regardless of VPC isolation or private API usage.**
+
+---
+
+## 9. **Enabling IAM Authorization Requires Explicit IAM Permissions and Request Signing**
+
+### Issue
+
+After considering enabling **IAM authorization** on API Gateway methods, a question arose about how browser-based UI requests (running on EC2 behind an internal ALB) would be authorized, and whether attaching permissions to the **EC2 IAM role** would be sufficient.
+
+---
+
+### Root Cause
+
+IAM authorization in API Gateway works **very differently** from resource policies or API keys.
+
+Key points:
+
+* When **IAM authorization** is enabled on an API Gateway method:
+
+  * API Gateway requires **SigV4-signed requests**
+  * Unsigned requests are treated as **anonymous** and rejected
+* Browsers **do not automatically sign AWS SigV4 requests**
+* Simply attaching `execute-api:Invoke` permission to the **EC2 instance IAM role** is **not enough** for browser-based calls
+
+In other words:
+
+* The EC2 IAM role is only used automatically by:
+
+  * AWS SDKs
+  * AWS CLI
+  * Backend services
+* It is **not automatically used by JavaScript running in the browser**
+
+---
+
+### Resolution
+
+Understood and clarified the correct patterns:
+
+1. **If IAM authorization is enabled**
+
+   * The caller must:
+
+     * Use AWS SDKs, or
+     * Explicitly sign requests using SigV4
+   * The IAM role (or user) must have:
+
+     ```json
+     {
+       "Effect": "Allow",
+       "Action": "execute-api:Invoke",
+       "Resource": "arn:aws:execute-api:{region}:{account}:{api-id}/dev/*/*"
+     }
+     ```
+
+2. **For browser-based UI applications**
+
+   * Direct IAM-authorized calls from the browser are **not practical** without:
+
+     * Cognito
+     * Custom signing logic
+   * Recommended approaches instead:
+
+     * Backend-for-Frontend (BFF) pattern
+     * Keep IAM auth disabled and rely on:
+
+       * VPC Endpoint restriction
+       * API Gateway resource policy
+       * Optional API keys
+
+---
+
+### Key Clarifications
+
+* IAM authorization is evaluated **in addition to**:
+
+  * Resource policies
+  * VPC endpoint restrictions
+* IAM roles attached to EC2 instances:
+
+  * Are used by server-side code
+  * Are **not automatically used by browser JavaScript**
+* Enabling IAM auth without SigV4 signing will result in **403 Unauthorized**
+* IAM auth is best suited for **service-to-service** or **backend calls**, not direct browser calls
+
+---
+
+### Final Learning
+
+> **Enabling IAM authorization requires SigV4-signed requests.
+> Attaching permissions to an EC2 IAM role alone does not authorize browser-based UI calls.**
+
+For UI-driven internal applications, IAM auth is usually **not the right first choice** unless paired with a proper authentication and signing mechanism.
+
+---
+
+## 10. **Clarifying Lambda-to-Lambda Communication and Post–API Gateway Behavior**
+
+### Issue
+
+There was uncertainty around how **Lambda-to-Lambda communication** should be designed when both Lambdas are exposed behind API Gateway, and whether API Gateway should be used as an intermediary.
+Additionally, there was a concern about whether Lambdas behave differently once invoked via API Gateway compared to when they were previously invoked behind an internal load balancer, especially regarding downstream calls to internal resources such as databases running on EC2.
+
+---
+
+### Root Cause
+
+The confusion stemmed from mixing two different architectural responsibilities:
+
+* **API Gateway** as an *edge/consumer-facing entry point*
+* **Lambda-to-Lambda or Lambda-to-backend communication** as *internal service communication*
+
+API Gateway is not a service mesh and does not manage or influence internal service-to-service calls after the initial request is routed to a Lambda.
+
+---
+
+### Resolution
+
+1. **Lambda-to-Lambda Communication**
+
+   * The recommended and most common pattern is **direct invocation using AWS SDK (boto3)**:
+
+     ```python
+     lambda_client.invoke(...)
+     ```
+   * This approach provides:
+
+     * Lower latency
+     * Lower cost
+     * IAM-based security
+     * Clear service boundaries
+   * API Gateway should not be used between Lambdas unless the Lambda is intentionally exposed as a consumer-facing API.
+
+2. **Alternative Patterns**
+
+   * Asynchronous workflows or decoupled communication should use:
+
+     * SQS, SNS, or EventBridge
+     * Step Functions for orchestration
+   * These patterns are preferred when durability, retries, or loose coupling are required.
+
+3. **Behavior of Lambda After API Gateway Invocation**
+
+   * Once a request reaches a Lambda function, it behaves **exactly the same** as when it was invoked behind an internal load balancer.
+   * API Gateway does not affect:
+
+     * Lambda runtime behavior
+     * IAM permissions
+     * VPC networking
+     * Access to downstream services
+
+4. **Accessing Internal Resources**
+
+   * Lambdas can continue to access internal resources (e.g., databases on EC2 using private IPs) as long as:
+
+     * They are attached to the VPC
+     * Security group and routing rules allow access
+   * API Gateway does not participate in or restrict these downstream calls.
+
+---
+
+### Key Clarifications
+
+* API Gateway is designed for **external or edge access**, not internal service-to-service communication
+* Direct Lambda invocation via AWS SDK is the preferred pattern for internal calls
+* API Gateway does not act as a proxy beyond the initial request routing
+* Lambda networking and permissions remain unchanged after API Gateway invocation
+
+---
+
+### Final Learning
+
+> **API Gateway is an entry point for consumers, not an internal communication layer.
+> Internal Lambda-to-Lambda and Lambda-to-backend communication should use direct invocation or event-driven patterns.**
+
+---
+
+## 11. **Choosing Between Proxy-Based and Explicit Path-Based API Gateway Configurations**
+
+### Issue
+
+There was a design decision to be made between using a **proxy-based configuration (`{proxy+}`)** versus defining **individual resource paths and methods** in AWS API Gateway.
+The concern was understanding how each approach affects **security, control, scalability, and long-term maintainability**, and which model should be used for a POC versus a real project.
+
+---
+
+### Root Cause
+
+The confusion arose from treating proxy-based and explicit path-based configurations as mutually exclusive, rather than understanding them as **complementary tools** with different strengths.
+
+API Gateway offers:
+
+* Proxy routing for flexibility and speed
+* Explicit resources for fine-grained control
+
+Each serves a different stage of API maturity.
+
+---
+
+### Resolution
+
+1. **Proxy-Based Configuration (`{proxy+}`)**
+
+   * Implemented `{proxy+}` resources with **Lambda proxy integration**
+   * Used as the functional equivalent of ALB `/*` routing
+   * Allows a single Lambda to handle all subpaths internally
+
+   **Benefits**
+
+   * Faster POC development
+   * Minimal API Gateway configuration
+   * Easier migration from ALB-based routing
+   * Centralized routing logic inside Lambda
+
+   **Limitations**
+
+   * No per-path authorization control
+   * No per-method throttling
+   * No request validation at API Gateway
+   * Security and routing logic handled entirely in Lambda
+
+2. **Explicit Path-Based Configuration**
+
+   * Defined individual resources and HTTP methods explicitly
+   * Each method can have:
+
+     * Different authorization settings
+     * Different throttling limits
+     * Request validation rules
+
+   **Benefits**
+
+   * Fine-grained security and governance
+   * Clear API contract
+   * Better observability and control
+   * Easier long-term maintenance for stable APIs
+
+   **Limitations**
+
+   * Higher initial setup effort
+   * Slower iteration during early development
+
+3. **Recommended Hybrid Approach**
+
+   * Start with **proxy-based routing** for:
+
+     * POCs
+     * Rapid iteration
+     * Evolving internal APIs
+   * Gradually introduce **explicit resources** for:
+
+     * Stable endpoints
+     * Security-sensitive operations
+     * Performance-critical APIs
+   * Keep `{proxy+}` as a fallback for flexibility and backward compatibility
+
+---
+
+### Key Clarifications
+
+* Proxy-based and explicit path-based configurations can **coexist** in the same API
+* `{proxy+}` is best for speed and ALB-like routing
+* Explicit paths are best for control and governance
+* Lambda proxy integration is recommended for both models in this setup
+* API Gateway should not be overused as an internal router for business logic
+
+---
+
+### Final Learning
+
+> **Use proxy-based routing for agility and explicit paths for control.
+> Start broad, then tighten as APIs mature.**
+
+This approach provides a clean migration path from POC to dev-ready and production-ready APIs without unnecessary rework.
+
+---

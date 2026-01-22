@@ -29,9 +29,11 @@ This guide is split into logically grouped files for easier navigation:
 | [02-fundamentals.md](02-fundamentals.md) | API Gateway Fundamentals | Core concepts, API types, comparisons |
 | [03-architecture.md](03-architecture.md) | Private REST API Architecture | Request flow, components, and troubleshooting |
 | [04-routing.md](04-routing.md) | Path-Based Routing | ALB vs API Gateway routing comparison |
-| [05-hands-on-implementation.md](05-hands-on-implementation.md) | Hands-On Implementation | Step-by-step POC build |
+| [05-hands-on-implementation.md](05-hands-on-implementation.md) | Hands-On Implementation | Step-by-step POC build with warnings |
 | [06-security.md](06-security.md) | Security & API Protection | API Keys, IAM, Resource Policies |
 | [07-operations.md](07-operations.md) | Dev-Ready Operations | Logging, monitoring, best practices |
+| [08-troubleshooting.md](08-troubleshooting.md) | Troubleshooting | Common issues and solutions |
+| [09-team-decision-guide.md](09-team-decision-guide.md) | **Team Decision Guide** | Routing & security options for team discussion |
 
 ---
 

@@ -1,6 +1,28 @@
 # Hands-On Implementation
 
-This section provides **step-by-step instructions** to build the POC using AWS Console.
+This section provides **step-by-step instructions** to build the POC using AWS Console (updated for 2026).
+
+---
+
+## Critical Warnings Before You Start
+
+> ⚠️ **WARNING 1: Stage vs Resource Path**
+> 
+> Do NOT create a `/dev` resource if your stage is named `dev`. API Gateway automatically adds the stage name to the URL.
+> - ❌ Resource `/dev` + Stage `dev` = `/dev/dev/api1/...`
+> - ✅ Resource `/api1` + Stage `dev` = `/dev/api1/...`
+
+> ⚠️ **WARNING 2: Resource Policy Before Deploy**
+> 
+> For Private REST APIs, you MUST configure the resource policy BEFORE first deployment, otherwise you'll get 403 errors.
+
+> ⚠️ **WARNING 3: VPC Endpoint Requirements**
+> 
+> If subnets are not visible when creating VPC endpoint:
+> - Enable **DNS hostnames** on VPC
+> - Enable **DNS resolution** on VPC
+> - Ensure subnets have available IP addresses
+> - Use default VPC if custom VPC doesn't work
 
 ---
 
@@ -29,7 +51,7 @@ This section provides **step-by-step instructions** to build the POC using AWS C
                     │       API Gateway             │
                     │    Private REST API          │
                     │                              │
-                    │  /dev                        │
+                    │  Stage: dev                  │
                     │  ├── /api1/{proxy+}          │───────┐
                     │  │   └── ANY                 │       │
                     │  └── /api2/{proxy+}          │───┐   │
@@ -41,59 +63,40 @@ This section provides **step-by-step instructions** to build the POC using AWS C
                                ▼                           ▼
                     ┌──────────────────┐       ┌──────────────────┐
                     │   api2-lambda    │       │   api1-lambda    │
-                    │                  │       │                  │
-                    │  Handles:        │       │  Handles:        │
-                    │  /dev/api2/*     │       │  /dev/api1/*     │
                     └──────────────────┘       └──────────────────┘
+```
+
+**Final URL Structure:**
+```
+https://{api-id}.execute-api.{region}.amazonaws.com/dev/api1/test
+                                                    ↑    ↑
+                                               Stage  Resource
 ```
 
 ---
 
-## Implementation Steps
+## Step 1: Create Lambda Functions
 
-### Step 1: Create Lambda Functions
+### 1.1 Create api1-lambda
 
-#### 1.1 Create api1-lambda
+1. Go to AWS Console → Lambda → **Create function**
+2. Configure:
+   - Function name: `api1-lambda`
+   - Runtime: Python 3.12
+   - Architecture: x86_64
+   - Permissions: Create new role with basic Lambda permissions
 
-**Navigate to Lambda Console:**
-1. Go to AWS Console → Lambda
-2. Click **Create function**
-
-**Configuration:**
-
-| Setting | Value |
-|---------|-------|
-| Function name | `api1-lambda` |
-| Runtime | Python 3.12 |
-| Architecture | x86_64 |
-| Execution role | Create a new role with basic Lambda permissions |
-
-**Function Code:**
+3. Replace code with:
 
 ```python
 import json
 
 def lambda_handler(event, context):
-    """
-    Handler for /dev/api1/{proxy+} requests
-    Demonstrates how path parameters are received from API Gateway
-    """
-    
-    # Extract path information
     path = event.get('path', 'unknown')
     http_method = event.get('httpMethod', 'unknown')
-    
-    # Get the proxy path parameter (everything after /dev/api1/)
     path_parameters = event.get('pathParameters', {})
     proxy_path = path_parameters.get('proxy', '') if path_parameters else ''
     
-    # Get query string parameters
-    query_params = event.get('queryStringParameters', {})
-    
-    # Get request body
-    body = event.get('body', None)
-    
-    # Build response
     response_body = {
         "service": "api1-lambda",
         "message": "Request handled by api1-lambda",
@@ -101,481 +104,260 @@ def lambda_handler(event, context):
             "full_path": path,
             "http_method": http_method,
             "proxy_path": proxy_path,
-            "query_parameters": query_params,
-            "body": body
+            "query_parameters": event.get('queryStringParameters', {}),
+            "body": event.get('body', None)
         }
     }
     
-    # Log for debugging (visible in CloudWatch)
     print(f"Received request: {json.dumps(event, indent=2)}")
     
     return {
         "statusCode": 200,
-        "headers": {
-            "Content-Type": "application/json"
-        },
+        "headers": {"Content-Type": "application/json"},
         "body": json.dumps(response_body, indent=2)
     }
 ```
 
-3. Click **Deploy** after pasting the code
+4. Click **Deploy**
+
+### 1.2 Create api2-lambda
+
+Repeat with function name `api2-lambda` and change `"service": "api2-lambda"` in the code.
 
 ---
 
-#### 1.2 Create api2-lambda
+## Step 2: Create VPC Endpoint for API Gateway
 
-**Repeat the same process with:**
+### Pre-requisites Check
 
-| Setting | Value |
-|---------|-------|
-| Function name | `api2-lambda` |
-| Runtime | Python 3.12 |
-| Architecture | x86_64 |
-| Execution role | Create a new role with basic Lambda permissions |
+Before creating the endpoint, verify your VPC settings:
 
-**Function Code:**
+1. Go to VPC Console → Your VPC → **Edit VPC settings**
+2. Ensure both are enabled:
+   - ✅ DNS hostnames
+   - ✅ DNS resolution
 
-```python
-import json
+### Create the Endpoint
 
-def lambda_handler(event, context):
-    """
-    Handler for /dev/api2/{proxy+} requests
-    Demonstrates how path parameters are received from API Gateway
-    """
-    
-    # Extract path information
-    path = event.get('path', 'unknown')
-    http_method = event.get('httpMethod', 'unknown')
-    
-    # Get the proxy path parameter (everything after /dev/api2/)
-    path_parameters = event.get('pathParameters', {})
-    proxy_path = path_parameters.get('proxy', '') if path_parameters else ''
-    
-    # Get query string parameters
-    query_params = event.get('queryStringParameters', {})
-    
-    # Get request body
-    body = event.get('body', None)
-    
-    # Build response
-    response_body = {
-        "service": "api2-lambda",
-        "message": "Request handled by api2-lambda",
-        "request_details": {
-            "full_path": path,
-            "http_method": http_method,
-            "proxy_path": proxy_path,
-            "query_parameters": query_params,
-            "body": body
-        }
-    }
-    
-    # Log for debugging (visible in CloudWatch)
-    print(f"Received request: {json.dumps(event, indent=2)}")
-    
-    return {
-        "statusCode": 200,
-        "headers": {
-            "Content-Type": "application/json"
-        },
-        "body": json.dumps(response_body, indent=2)
-    }
-```
-
----
-
-### Step 2: Create VPC Endpoint for API Gateway
-
-> **Note:** Skip this step if you're using an existing VPC endpoint. Ensure Private DNS is enabled.
-
-**Navigate to VPC Console:**
-1. Go to AWS Console → VPC → Endpoints
-2. Click **Create endpoint**
-
-**Configuration:**
+1. VPC Console → Endpoints → **Create endpoint**
+2. Configure:
 
 | Setting | Value |
 |---------|-------|
-| Name tag | `api-gateway-endpoint` |
+| Name | `api-gateway-endpoint` |
 | Service category | AWS services |
-| Service | `com.amazonaws.<your-region>.execute-api` |
+| Services | Search for `execute-api`, select `com.amazonaws.{region}.execute-api` |
 | VPC | Select your VPC |
-| Subnets | Select private subnets (at least 2, different AZs) |
-| Security groups | Select/create SG allowing HTTPS (443) inbound from VPC CIDR |
-| DNS name type | Enable private DNS name ✅ |
+| Subnets | Select subnets (at least 2 in different AZs) |
+| Security groups | Create/select SG with HTTPS (443) inbound from VPC CIDR |
+| Policy | Full access |
 
-**Security Group Rules:**
+3. **Enable DNS name** section: Ensure "Enable DNS name" is checked (this is Private DNS)
+4. Click **Create endpoint**
+5. Wait for status: **Available**
+6. **Copy the VPC Endpoint ID** (e.g., `vpce-0abc123def456789`)
 
-| Type | Protocol | Port | Source | Description |
-|------|----------|------|--------|-------------|
-| HTTPS | TCP | 443 | VPC CIDR (e.g., 10.0.0.0/16) | Allow API Gateway access |
-
-3. Click **Create endpoint**
-4. Wait for status to become **Available**
-
-**Record the VPC Endpoint ID:** `vpce-xxxxxxxxxxxxxxxxx` (needed for resource policy)
+> ⚠️ **If subnets don't appear:** Use the default VPC, or ensure DNS settings are enabled on your VPC.
 
 ---
 
-### Step 3: Create Private REST API
+## Step 3: Create Private REST API
 
-**Navigate to API Gateway Console:**
-1. Go to AWS Console → API Gateway
-2. Click **Create API**
-3. Under REST API, click **Build** (NOT REST API Private - we'll configure that)
-
-**Configuration:**
+1. API Gateway Console → **Create API**
+2. Under "REST API", click **Build**
+3. Configure:
 
 | Setting | Value |
 |---------|-------|
 | API name | `internal-api-poc` |
+| API description | Internal API Gateway POC |
 | API endpoint type | **Private** |
-| VPC Endpoint IDs | Enter your VPC Endpoint ID (vpce-xxx) |
 
-4. Click **Create API**
+4. Under "VPC endpoint IDs", enter your VPC Endpoint ID
+5. Click **Create API**
 
 ---
 
-### Step 4: Configure Resource Policy
+## Step 4: Configure Resource Policy (BEFORE Creating Resources)
 
-**In the API Gateway Console:**
-1. Select your API (`internal-api-poc`)
-2. In the left sidebar, click **Resource Policy**
-3. Enter the following policy (replace placeholders):
+> ⚠️ **CRITICAL:** Configure this BEFORE deploying the API!
+
+1. In the API, go to **Resource policy** (left sidebar)
+2. Enter this policy:
 
 ```json
 {
     "Version": "2012-10-17",
     "Statement": [
         {
-            "Effect": "Deny",
-            "Principal": "*",
-            "Action": "execute-api:Invoke",
-            "Resource": "arn:aws:execute-api:<REGION>:<ACCOUNT_ID>:<API_ID>/*",
-            "Condition": {
-                "StringNotEquals": {
-                    "aws:sourceVpce": "<YOUR_VPC_ENDPOINT_ID>"
-                }
-            }
-        },
-        {
             "Effect": "Allow",
             "Principal": "*",
             "Action": "execute-api:Invoke",
-            "Resource": "arn:aws:execute-api:<REGION>:<ACCOUNT_ID>:<API_ID>/*"
+            "Resource": "arn:aws:execute-api:REGION:ACCOUNT_ID:API_ID/*",
+            "Condition": {
+                "StringEquals": {
+                    "aws:SourceVpce": "vpce-YOUR_ENDPOINT_ID"
+                }
+            }
         }
     ]
 }
 ```
 
 **Replace:**
-- `<REGION>`: Your AWS region (e.g., `ap-south-1`)
-- `<ACCOUNT_ID>`: Your AWS account ID
-- `<API_ID>`: The API ID (visible in the console URL or API settings)
-- `<YOUR_VPC_ENDPOINT_ID>`: The VPC endpoint ID from Step 2
+- `REGION`: Your region (e.g., `ap-south-1`)
+- `ACCOUNT_ID`: Your AWS account ID (12 digits)
+- `API_ID`: The API ID (from URL or API details)
+- `vpce-YOUR_ENDPOINT_ID`: Your VPC endpoint ID
 
-4. Click **Save**
+3. Click **Save**
+
+> **Note:** Use `aws:SourceVpce` NOT `aws:SourceVpc`. Private APIs route through the VPC endpoint.
 
 ---
 
-### Step 5: Create API Resources
+## Step 5: Create API Resources
 
-**Create Resource Structure:**
+### Correct Structure (No /dev resource!)
 
 ```
-/dev
-├── /api1
-│   └── /{proxy+}
-└── /api2
-    └── /{proxy+}
+/                      ← Root (already exists)
+├── /api1              ← Resource
+│   └── /{proxy+}      ← Proxy resource
+└── /api2              ← Resource
+    └── /{proxy+}      ← Proxy resource
+
+Stage: dev             ← Applied at deployment
 ```
 
-#### 5.1 Create `/dev` Resource
+### 5.1 Create `/api1` Resource
 
-1. In the API, select the root resource `/`
-2. Click **Create Resource**
+1. Select the root `/` resource
+2. Click **Create resource**
 3. Configure:
-   - Resource Name: `dev`
-   - Resource Path: `dev`
-4. Click **Create Resource**
+   - Resource name: `api1`
+   - Resource path: `api1`
+   - CORS: Leave unchecked (for now)
+4. Click **Create resource**
 
-#### 5.2 Create `/api1` Resource
+### 5.2 Create `/{proxy+}` under `/api1`
 
-1. Select the `/dev` resource
-2. Click **Create Resource**
+1. Select `/api1` resource
+2. Click **Create resource**
 3. Configure:
-   - Resource Name: `api1`
-   - Resource Path: `api1`
-4. Click **Create Resource**
+   - ✅ **Proxy resource** (enable this checkbox)
+   - Resource name: `{proxy+}`
+   - Resource path: `{proxy+}`
+4. Click **Create resource**
 
-#### 5.3 Create `/{proxy+}` under `/api1`
+### 5.3 Create `/api2` and `/{proxy+}`
 
-1. Select the `/dev/api1` resource
-2. Click **Create Resource**
-3. Configure:
-   - **Configure as proxy resource:** ✅ Check this box
-   - Resource Name: `proxy`
-   - Resource Path: `{proxy+}`
-4. Click **Create Resource**
-
-#### 5.4 Create `/api2` and its `/{proxy+}`
-
-Repeat steps 5.2 and 5.3 for `/api2`:
-1. Select `/dev` → Create Resource → `api2`
-2. Select `/dev/api2` → Create Resource → Enable proxy → `{proxy+}`
+Repeat:
+1. Select `/` → Create resource → `api2`
+2. Select `/api2` → Create resource → Enable proxy → `{proxy+}`
 
 ---
 
-### Step 6: Configure Integrations
+## Step 6: Configure Lambda Integrations
 
-#### 6.1 Configure `/dev/api1/{proxy+}` Integration
+### 6.1 Configure `/api1/{proxy+}`
 
-1. Select the `/{proxy+}` resource under `/dev/api1`
-2. Select the **ANY** method
-3. Click **Edit integration**
+1. Select `/{proxy+}` under `/api1`
+2. The **ANY** method should be visible
+3. Click on **ANY** → **Integration request** → **Edit**
 4. Configure:
-
-| Setting | Value |
-|---------|-------|
-| Integration type | Lambda Function |
-| Lambda proxy integration | ✅ Enabled |
-| Lambda function | `api1-lambda` |
-
+   - Integration type: **Lambda function**
+   - ✅ Lambda proxy integration
+   - Lambda function: `api1-lambda`
 5. Click **Save**
-6. Click **OK** when prompted to add permission
+6. If prompted to add permission, click **OK**
 
-#### 6.2 Configure `/dev/api2/{proxy+}` Integration
+### 6.2 Configure `/api2/{proxy+}`
 
-1. Select the `/{proxy+}` resource under `/dev/api2`
-2. Select the **ANY** method
-3. Click **Edit integration**
-4. Configure:
-
-| Setting | Value |
-|---------|-------|
-| Integration type | Lambda Function |
-| Lambda proxy integration | ✅ Enabled |
-| Lambda function | `api2-lambda` |
-
-5. Click **Save**
-6. Click **OK** when prompted to add permission
+Repeat for `/api2/{proxy+}` → integrate with `api2-lambda`
 
 ---
 
-### Step 7: Deploy the API
+## Step 7: Deploy the API
 
-1. Click **Deploy API**
-2. Configure:
-
-| Setting | Value |
-|---------|-------|
-| Stage | **New Stage** |
-| Stage name | `dev` |
-| Stage description | Development stage |
-
+1. Click **Deploy API** button
+2. Select:
+   - Stage: **New stage**
+   - Stage name: `dev`
 3. Click **Deploy**
 
-**Record the Invoke URL:** 
+**Your Invoke URL:**
 ```
-https://<api-id>.execute-api.<region>.amazonaws.com/dev
+https://{api-id}.execute-api.{region}.amazonaws.com/dev
 ```
 
 ---
 
-### Step 8: Test the API
+## Step 8: Test the API
 
-#### Testing from EC2 Instance in VPC
+### From EC2 in the VPC
 
-1. SSH into an EC2 instance in your VPC (in a private subnet associated with the VPC endpoint)
-2. Run the following tests:
+SSH into an EC2 instance in your VPC and test:
 
-**Test 1: Basic request to api1**
 ```bash
-curl https://<api-id>.execute-api.<region>.amazonaws.com/dev/api1/test
+# Test api1
+curl https://{api-id}.execute-api.{region}.amazonaws.com/dev/api1/test
+
+# Test nested path
+curl https://{api-id}.execute-api.{region}.amazonaws.com/dev/api1/users/123
+
+# Test api2
+curl https://{api-id}.execute-api.{region}.amazonaws.com/dev/api2/hello
 ```
 
-**Expected Response:**
-```json
-{
-  "service": "api1-lambda",
-  "message": "Request handled by api1-lambda",
-  "request_details": {
-    "full_path": "/dev/api1/test",
-    "http_method": "GET",
-    "proxy_path": "test",
-    "query_parameters": null,
-    "body": null
-  }
-}
-```
+### Validate Private Routing
 
-**Test 2: Nested path**
 ```bash
-curl https://<api-id>.execute-api.<region>.amazonaws.com/dev/api1/foo/bar
+# Should resolve to private IPs
+nslookup {api-id}.execute-api.{region}.amazonaws.com
 ```
 
-**Expected `proxy_path`:** `foo/bar`
-
-**Test 3: api2 endpoint**
-```bash
-curl https://<api-id>.execute-api.<region>.amazonaws.com/dev/api2/hello
-```
-
-**Expected Response:**
-```json
-{
-  "service": "api2-lambda",
-  "message": "Request handled by api2-lambda",
-  "request_details": {
-    "full_path": "/dev/api2/hello",
-    "http_method": "GET",
-    "proxy_path": "hello",
-    "query_parameters": null,
-    "body": null
-  }
-}
-```
-
-**Test 4: Deeply nested path**
-```bash
-curl https://<api-id>.execute-api.<region>.amazonaws.com/dev/api2/v1/users/123/orders
-```
-
-**Expected `proxy_path`:** `v1/users/123/orders`
+If it returns private IPs (10.x.x.x or 172.x.x.x), traffic is correctly routed through the VPC endpoint.
 
 ---
 
-## Understanding the Lambda Event
+## Common Issues During Implementation
 
-When API Gateway forwards a request to Lambda with proxy integration, the event looks like:
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| 403 "explicit deny" | Wrong condition in resource policy | Use `aws:SourceVpce` not `aws:SourceVpc` |
+| 403 after deployment | Resource policy not configured | Add resource policy, redeploy |
+| URL shows `/dev/dev/...` | Created `/dev` resource | Delete `/dev` resource, use stage only |
+| Subnets not visible | VPC DNS not enabled | Enable DNS hostnames and resolution |
+| API key not enforced | No usage plan | Create usage plan and associate |
 
-```json
-{
-  "resource": "/dev/api1/{proxy+}",
-  "path": "/dev/api1/users/123",
-  "httpMethod": "GET",
-  "headers": {
-    "Host": "xxxxx.execute-api.region.amazonaws.com",
-    "User-Agent": "curl/7.68.0",
-    "Accept": "*/*"
-  },
-  "queryStringParameters": {
-    "status": "active",
-    "limit": "10"
-  },
-  "pathParameters": {
-    "proxy": "users/123"
-  },
-  "stageVariables": null,
-  "requestContext": {
-    "resourcePath": "/dev/api1/{proxy+}",
-    "httpMethod": "GET",
-    "path": "/dev/dev/api1/users/123",
-    "stage": "dev",
-    "domainName": "xxxxx.execute-api.region.amazonaws.com",
-    "apiId": "xxxxx"
-  },
-  "body": null,
-  "isBase64Encoded": false
-}
-```
-
-### Key Fields
-
-| Field | Description | Example Value |
-|-------|-------------|---------------|
-| `path` | Full request path | `/dev/api1/users/123` |
-| `pathParameters.proxy` | Captured by `{proxy+}` | `users/123` |
-| `httpMethod` | HTTP method | `GET`, `POST`, `PUT`, `DELETE` |
-| `queryStringParameters` | Query params as object | `{"status": "active"}` |
-| `body` | Request body (string) | `"{"name": "John"}"` |
-| `headers` | Request headers | `{"Content-Type": "application/json"}` |
-
----
-
-## How This Replaces ALB Routing
-
-### Comparison
-
-| ALB Configuration | API Gateway Equivalent |
-|-------------------|----------------------|
-| Rule: `/dev/api1/*` → TG1 | `/dev/api1/{proxy+}` → api1-lambda |
-| Rule: `/dev/api2/*` → TG2 | `/dev/api2/{proxy+}` → api2-lambda |
-
-### Key Differences
-
-| Aspect | ALB | API Gateway |
-|--------|-----|-------------|
-| **Captured Path** | Full path in `event.path` | Full path + `proxy` parameter |
-| **Path Variable** | Must parse from path | Available in `pathParameters.proxy` |
-| **Method Routing** | All methods to same target | Can configure per-method handlers |
-| **Base Path** | Included in path | Included in path (stage adds prefix) |
-
----
-
-## Limitations of This Approach
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│               LIMITATIONS OF {proxy+} APPROACH                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. No Gateway-Level Validation                                  │
-│     └── All paths accepted, backend must validate               │
-│     └── Invalid paths reach Lambda (cost + latency)             │
-│                                                                  │
-│  2. Same Auth for All Subpaths                                   │
-│     └── Can't have /admin/* require IAM while /public/* is open│
-│     └── Must implement in Lambda if needed                      │
-│                                                                  │
-│  3. Same Throttling for All Subpaths                            │
-│     └── Rate limits apply to entire {proxy+} resource           │
-│     └── Can't rate-limit /write/* differently from /read/*      │
-│                                                                  │
-│  4. Caching Less Effective                                       │
-│     └── Cache key must include entire path                      │
-│     └── No per-endpoint cache configuration                     │
-│                                                                  │
-│  5. OpenAPI Documentation                                        │
-│     └── Generates generic docs for {proxy+}                     │
-│     └── Doesn't reflect actual endpoints                        │
-│                                                                  │
-│  6. 404 Handling                                                 │
-│     └── Lambda must return 404 for invalid paths                │
-│     └── API Gateway can't distinguish valid from invalid        │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+See [08-troubleshooting.md](08-troubleshooting.md) for detailed solutions.
 
 ---
 
 ## Verification Checklist
 
 ```
-□ Lambda Functions
-  ├── □ api1-lambda created and deployed
-  ├── □ api2-lambda created and deployed
-  └── □ Both have CloudWatch Logs permissions
-
 □ VPC Endpoint
-  ├── □ Created in correct VPC
-  ├── □ Private DNS enabled
-  ├── □ Security group allows HTTPS (443)
-  └── □ Status is "Available"
+  ├── □ DNS hostnames enabled on VPC
+  ├── □ DNS resolution enabled on VPC
+  ├── □ Private DNS enabled on endpoint
+  ├── □ Status: Available
+  └── □ Endpoint ID recorded
 
 □ API Gateway
   ├── □ Private REST API created
-  ├── □ Resource policy configured with VPC endpoint
-  ├── □ Resources created (/dev/api1/{proxy+}, /dev/api2/{proxy+})
-  ├── □ Integrations configured (Lambda proxy)
+  ├── □ Resource policy configured (BEFORE deploy)
+  ├── □ Using aws:SourceVpce condition
+  ├── □ NO /dev resource (only /api1, /api2)
+  ├── □ {proxy+} resources created
+  ├── □ Lambda integrations configured
   └── □ Deployed to "dev" stage
 
 □ Testing
+  ├── □ DNS resolves to private IPs
   ├── □ /dev/api1/test returns api1-lambda response
-  ├── □ /dev/api1/foo/bar returns proxy_path = "foo/bar"
-  ├── □ /dev/api2/hello returns api2-lambda response
-  └── □ Nested paths work correctly
+  └── □ /dev/api2/test returns api2-lambda response
 ```
 
 ---
