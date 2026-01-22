@@ -33,7 +33,10 @@ This guide is split into logically grouped files for easier navigation:
 | [06-security.md](06-security.md) | Security & API Protection | API Keys, IAM, Resource Policies |
 | [07-operations.md](07-operations.md) | Dev-Ready Operations | Logging, monitoring, best practices |
 | [08-troubleshooting.md](08-troubleshooting.md) | Troubleshooting | Common issues and solutions |
-| [09-team-decision-guide.md](09-team-decision-guide.md) | **Team Decision Guide** | Routing & security options for team discussion |
+| [09-team-decision-guide.md](09-team-decision-guide.md) | Team Decision Guide | Routing & security options for team |
+| [10-visual-implementation-guide.md](10-visual-implementation-guide.md) | **Visual Guide** | Screenshots from AWS Console |
+| [11-explicit-path-routing.md](11-explicit-path-routing.md) | Explicit Routing | Non-proxy approach with per-endpoint control |
+| [12-method-configuration-guide.md](12-method-configuration-guide.md) | Method Configuration | Integration types, proxy vs non-proxy, ANY vs individual |
 
 ---
 
