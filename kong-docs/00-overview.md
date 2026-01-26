@@ -25,6 +25,10 @@ Kong is an **open-source API Gateway** that can run anywhere (EC2, ECS, Kubernet
 | [05-security.md](05-security.md) | Security | API keys, rate limiting, access control |
 | [06-lambda-integration.md](06-lambda-integration.md) | Lambda | Calling AWS Lambda from Kong |
 | [07-operations.md](07-operations.md) | Operations | Logging, metrics, configuration |
+| [08-free-tier-plugins-guide.md](08-free-tier-plugins-guide.md) | Plugins | Available plugins for free tier |
+| [09-poc-implementation-guide.md](09-poc-implementation-guide.md) | Implementation | Nginx + Kong configuration |
+| [10-step-by-step-implementation.md](10-step-by-step-implementation.md) | **Step-by-Step** | Kong Manager UI walkthrough |
+| [11-production-architecture-guide.md](11-production-architecture-guide.md) | **Production POC** | Complete architecture & Lambda strategies |
 
 ---
 
