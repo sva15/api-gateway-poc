@@ -1,17 +1,18 @@
 # Kong Hands-On Implementation Guide
 
-Complete step-by-step guide with prerequisites, Lambda function, Nginx configuration, and Kong setup.
+Complete step-by-step guide with prerequisites, ALB setup, Lambda function, Nginx configuration, and Kong setup.
 
 ---
 
 ## Table of Contents
 
 1. [Prerequisites & Infrastructure](#1-prerequisites--infrastructure)
-2. [URL Translation Flow](#2-url-translation-flow)
-3. [Lambda Function Setup](#3-lambda-function-setup)
-4. [Nginx Configuration](#4-nginx-configuration)
-5. [Kong Configuration](#5-kong-configuration)
-6. [Testing All Functionality](#6-testing-all-functionality)
+2. [ALB Listener Rules Configuration](#2-alb-listener-rules-configuration)
+3. [URL Translation Flow](#3-url-translation-flow)
+4. [Lambda Function Setup](#4-lambda-function-setup)
+5. [Nginx Configuration](#5-nginx-configuration)
+6. [Kong Configuration](#6-kong-configuration)
+7. [Testing All Functionality](#7-testing-all-functionality)
 
 ---
 
@@ -24,19 +25,17 @@ Complete step-by-step guide with prerequisites, Lambda function, Nginx configura
 □ EC2 instance in VPC
   ├── Security Group: Allow 80 from ALB
   ├── IAM Role: Lambda invoke permission
-  └── Docker & Docker Compose installed
+  ├── Docker & Docker Compose installed
+  └── Nginx installed
 
-□ Internal ALB
+□ Internal ALB (created)
   ├── Listener: Port 80
-  └── Target Group: IP-based → EC2 private IP
+  └── Target Group: IP-based → EC2 private IP (Port 80)
 
 □ Lambda Function
   ├── VPC attached (same VPC as EC2)
   ├── Python 3.11+ runtime
   └── Execution role with VPC access
-
-□ ALB Lambda Target Group (existing)
-  └── Routes: /dev/api1/*, /dev/api2/*
 ```
 
 ### 1.2 EC2 IAM Role Policy
@@ -73,9 +72,71 @@ Attach to EC2 instance role for Kong Lambda plugin:
 
 ---
 
-## 2. URL Translation Flow
+## 2. ALB Listener Rules Configuration
 
-### 2.1 Complete Request Flow
+### 2.1 Create IP-Based Target Group
+
+**EC2 Console → Target Groups → Create Target Group**
+
+| Field | Value |
+|-------|-------|
+| Target type | IP addresses |
+| Target group name | `kong-ec2-tg` |
+| Protocol | HTTP |
+| Port | 80 |
+| VPC | Your VPC |
+| Health check path | `/health` |
+
+**Register Target:**
+- Add your EC2 private IP (e.g., `10.0.1.50`) on port `80`
+
+### 2.2 Configure ALB Listener Rules
+
+**EC2 Console → Load Balancers → Your ALB → Listeners → HTTP:80 → View/edit rules**
+
+Add the following rules in order of priority:
+
+| Priority | Condition | Action | Description |
+|----------|-----------|--------|-------------|
+| 1 | Path = `/api-gateway/*` | Forward to `kong-ec2-tg` | Kong API Proxy |
+| 2 | Path = `/kong/*` | Forward to `kong-ec2-tg` | Kong Manager GUI |
+| 3 | Path = `/kong-admin/*` | Forward to `kong-ec2-tg` | Kong Admin API |
+| 4 | Path = `/health` | Forward to `kong-ec2-tg` | Health check |
+| Default | - | Forward to `kong-ec2-tg` or 404 | Catch-all |
+
+### 2.3 ALB Rule Configuration Steps
+
+1. **Add Rule for API Gateway:**
+   - Click "Add rule"
+   - Condition: Path = `/api-gateway/*`
+   - Action: Forward to = `kong-ec2-tg`
+   - Priority: 1
+
+2. **Add Rule for Kong Manager:**
+   - Click "Add rule"
+   - Condition: Path = `/kong/*`
+   - Action: Forward to = `kong-ec2-tg`
+   - Priority: 2
+
+3. **Add Rule for Kong Admin (Optional):**
+   - Click "Add rule"
+   - Condition: Path = `/kong-admin/*`
+   - Action: Forward to = `kong-ec2-tg`
+   - Priority: 3
+
+### 2.4 Verify ALB Health
+
+Wait for target to become **healthy**:
+- EC2 Console → Target Groups → `kong-ec2-tg` → Targets
+- Status should show: `healthy`
+
+> **Note:** Nginx must be running with `/health` endpoint responding before ALB marks target healthy.
+
+---
+
+## 3. URL Translation Flow
+
+### 3.1 Complete Request Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -123,7 +184,7 @@ Attach to EC2 instance role for Kong Lambda plugin:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Port Mapping Summary
+### 3.2 Port Mapping Summary
 
 | External URL | Nginx Location | Kong Port | Purpose |
 |--------------|----------------|-----------|---------|
@@ -131,7 +192,7 @@ Attach to EC2 instance role for Kong Lambda plugin:
 | `/kong/*` | proxy_pass :8002/ | 8002 | Kong Manager GUI |
 | `/kong-admin/*` | proxy_pass :8001/ | 8001 | Admin API (restrict!) |
 
-### 2.3 Key Points
+### 3.3 Key Points
 
 1. **Port 8000** = Kong Proxy (where APIs are accessed)
 2. **Port 8001** = Kong Admin API (configuration, NOT for browsers)
@@ -141,9 +202,9 @@ Attach to EC2 instance role for Kong Lambda plugin:
 
 ---
 
-## 3. Lambda Function Setup
+## 4. Lambda Function Setup
 
-### 3.1 Lambda Function Code (Flask-based)
+### 4.1 Lambda Function Code (Flask-based)
 
 Create Lambda function: `kong-poc-lambda`
 
@@ -424,7 +485,7 @@ def format_response(status_code, body):
     }
 ```
 
-### 3.2 Lambda Deployment
+### 4.2 Lambda Deployment
 
 1. Create Lambda function in AWS Console
 2. Copy the code above
@@ -433,7 +494,7 @@ def format_response(status_code, body):
 5. Attach to VPC (same as EC2)
 6. Test with sample event
 
-### 3.3 Test Events
+### 4.3 Test Events
 
 **GET /users:**
 ```json
@@ -457,9 +518,9 @@ def format_response(status_code, body):
 
 ---
 
-## 4. Nginx Configuration
+## 5. Nginx Configuration
 
-### 4.1 Complete nginx.conf
+### 5.1 Complete nginx.conf
 
 ```nginx
 # /etc/nginx/nginx.conf
@@ -570,14 +631,14 @@ http {
 }
 ```
 
-### 4.2 Reload Nginx
+### 5.2 Reload Nginx
 
 ```bash
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### 4.3 Verify Nginx is Working
+### 5.3 Verify Nginx is Working
 
 ```bash
 # Test Kong proxy
@@ -592,9 +653,9 @@ curl http://localhost/health
 
 ---
 
-## 5. Kong Configuration
+## 6. Kong Configuration
 
-### 5.1 Start Kong with Docker Compose
+### 6.1 Start Kong with Docker Compose
 
 Use your existing `docker-compose.yaml`:
 
@@ -603,7 +664,7 @@ cd /path/to/kong
 docker-compose up -d
 ```
 
-### 5.2 Verify Kong is Running
+### 6.2 Verify Kong is Running
 
 ```bash
 # Check containers
@@ -613,7 +674,7 @@ docker ps
 curl http://localhost:8001/status
 ```
 
-### 5.3 Configure via Kong Manager UI
+### 6.3 Configure via Kong Manager UI
 
 Access: `http://alb-url/kong/` or `http://localhost:8002`
 
@@ -736,9 +797,9 @@ Note the generated key (e.g., `abc123xyz890...`)
 
 ---
 
-## 6. Testing All Functionality
+## 7. Testing All Functionality
 
-### 6.1 Test Commands
+### 7.1 Test Commands
 
 **Replace `YOUR_API_KEY` with your generated key.**
 
@@ -824,7 +885,7 @@ curl "$ALB_URL/api-gateway/users"
 # Expected: {"message":"No API key found in request"}
 ```
 
-### 6.2 Expected Responses
+### 7.2 Expected Responses
 
 **GET /users:**
 ```json
@@ -855,7 +916,7 @@ curl "$ALB_URL/api-gateway/users"
 }
 ```
 
-### 6.3 Troubleshooting
+### 7.3 Troubleshooting
 
 | Issue | Check |
 |-------|-------|
